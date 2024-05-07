@@ -8,18 +8,20 @@
 extern "C" {
 #endif
 
-
-struct button_state
-{
-    bool is_adv_enable;
-    bool is_bond;
+enum device_status_enum {
+  ADV_ENABLE,
+  ADV_IS_ENABLED,
+  BONDED,
+  IS_BONDED,
+  CONNECTED,
+  RESET,
 };
 
+struct device_status {
+  atomic_t status_bits;
+};
 
-int get_status(struct button_state* out_state);
-
-int set_is_connected(bool enable);
-
+struct device_status* get_status(void);
 
 #ifdef __cplusplus
 }

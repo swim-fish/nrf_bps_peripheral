@@ -46,10 +46,10 @@ struct bt_conn* ble_conn;
 
 static size_t send_count = 0;
 static uint8_t simulate_vnd;
-volatile bool is_bonded = false;
-volatile bool is_adved = false;
 static bt_addr_le_t bond_addr;
 static struct bt_le_adv_param adv_param;
+
+static struct device_status* device_status_ptr = NULL;
 
 static void notify_bps(void);
 
@@ -65,7 +65,8 @@ static void vnd_ccc_cfg_changed(const struct bt_gatt_attr* attr,
   simulate_vnd = (value == BT_GATT_CCC_NOTIFY) ? 1 : 0;
   printk("Notification %s\n", simulate_vnd ? "enabled" : "disabled");
 
-  if (is_bonded && simulate_vnd) {
+  if (atomic_test_bit(&device_status_ptr->status_bits, BONDED) &&
+      simulate_vnd) {
     notify_bps();
   }
 }
@@ -110,7 +111,7 @@ static void connected(struct bt_conn* conn, uint8_t err) {
     bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
     printk("Connected %s\n", addr);
 
-    set_is_connected(true);
+    atomic_set_bit(&device_status_ptr->status_bits, CONNECTED);
 
     if (!ble_conn) {
       ble_conn = bt_conn_ref(conn);
@@ -129,7 +130,7 @@ static void disconnected(struct bt_conn* conn, uint8_t reason) {
     bt_conn_unref(ble_conn);
     ble_conn = NULL;
   }
-  set_is_connected(false);
+  atomic_clear_bit(&device_status_ptr->status_bits, CONNECTED);
 }
 
 static void alert_stop(void) {
@@ -185,11 +186,14 @@ static void bt_ready(void) {
     adv_param = *BT_LE_ADV_CONN_DIR_LOW_DUTY(&bond_addr);
     adv_param.options |= BT_LE_ADV_OPT_DIR_ADDR_RPA;
     // err = bt_le_adv_start(&adv_param, NULL, 0, NULL, 0);
-    is_bonded = true;
-    is_adved = true;
+    atomic_set_bit(&device_status_ptr->status_bits, IS_BONDED);
+    atomic_set_bit(&device_status_ptr->status_bits, BONDED);
+    atomic_set_bit(&device_status_ptr->status_bits, ADV_IS_ENABLED);
+    atomic_set_bit(&device_status_ptr->status_bits, ADV_ENABLE);
     err = bt_le_adv_start(BT_LE_ADV_CONN_NAME, ad, ARRAY_SIZE(ad), NULL, 0);
   } else {
-    is_adved = true;
+    atomic_set_bit(&device_status_ptr->status_bits, ADV_IS_ENABLED);
+    atomic_set_bit(&device_status_ptr->status_bits, ADV_ENABLE);
     err = bt_le_adv_start(BT_LE_ADV_CONN_NAME, ad, ARRAY_SIZE(ad), NULL, 0);
   }
 
@@ -213,7 +217,8 @@ static void bt_ready(void) {
 
 void pairing_complete(struct bt_conn* conn, bool bonded) {
   printk("Pairing complete\n");
-  is_bonded = true;
+  atomic_set_bit(&device_status_ptr->status_bits, IS_BONDED);
+  atomic_set_bit(&device_status_ptr->status_bits, BONDED);
   bt_addr_le_copy(&bond_addr, bt_conn_get_dst(conn));
 
   // printk("Pairing completed. Rebooting in 3 seconds...\n");
@@ -225,10 +230,17 @@ static struct bt_conn_auth_info_cb bt_conn_auth_info = {.pairing_complete =
                                                             pairing_complete};
 
 int main(void) {
-
   struct bt_gatt_attr* vnd_ind_attr;
   char str[BT_UUID_STR_LEN];
   int err;
+
+  if ((device_status_ptr = get_status()) == NULL) {
+    if (device_status_ptr == NULL) {
+      printk("device_status_ptr is NULL \n");
+    }
+    printk("Failed to get status bits\n");
+    return 0;
+  }
 
   if (app_event_manager_init()) {
     printk("Application Event Manager not initialized\n");
@@ -257,24 +269,28 @@ int main(void) {
   while (1) {
     k_sleep(K_MSEC(10));
 
-    struct button_state state;
-    if (get_status(&state) == 0) {
-      if (state.is_adv_enable && !is_adved) {
-        LOG_INF("Starting advertising");
-        is_adved = true;
-        err = bt_le_adv_start(BT_LE_ADV_CONN_NAME, ad, ARRAY_SIZE(ad), NULL, 0);
-      } else if (!state.is_adv_enable && is_adved) {
-        LOG_INF("Stopping advertising");
-        is_adved = false;
-        err = bt_le_adv_stop();
-      }
+    if (atomic_test_bit(&device_status_ptr->status_bits, ADV_ENABLE) &&
+        !atomic_test_bit(&device_status_ptr->status_bits, ADV_IS_ENABLED)) {
+      LOG_INF("Starting advertising");
+      atomic_set_bit(&device_status_ptr->status_bits, ADV_IS_ENABLED);
+      err = bt_le_adv_start(BT_LE_ADV_CONN_NAME, ad, ARRAY_SIZE(ad), NULL, 0);
+    } else if (!atomic_test_bit(&device_status_ptr->status_bits, ADV_ENABLE) &&
+               atomic_test_bit(&device_status_ptr->status_bits,
+                               ADV_IS_ENABLED)) {
 
-      if (state.is_bond && !is_bonded) {
+      LOG_INF("Stopping advertising");
+      atomic_clear_bit(&device_status_ptr->status_bits, ADV_IS_ENABLED);
+      err = bt_le_adv_stop();
+    }
+    {
+      if (atomic_test_bit(&device_status_ptr->status_bits, BONDED) &&
+          !atomic_test_bit(&device_status_ptr->status_bits, IS_BONDED)) {
         LOG_INF("Set bonding to true");
-        is_bonded = true;
-      } else if (!state.is_bond && is_bonded) {
+        atomic_set_bit(&device_status_ptr->status_bits, IS_BONDED);
+      } else if (!atomic_test_bit(&device_status_ptr->status_bits, BONDED) &&
+                 atomic_test_bit(&device_status_ptr->status_bits, IS_BONDED)) {
         LOG_INF("Set bonding to false and call unpair");
-        is_bonded = false;
+        atomic_clear_bit(&device_status_ptr->status_bits, IS_BONDED);
         err = bt_unpair(BT_ID_DEFAULT, BT_ADDR_LE_ANY);
       }
     }

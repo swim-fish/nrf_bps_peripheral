@@ -31,10 +31,6 @@ LOG_MODULE_REGISTER(MODULE, CONFIG_CAF_SAMPLE_BUTTON_STATE_LOG_LEVEL);
 #define BLINKY_SLEEP_FAST 100
 #define BLINKY_SLEEP_SLOW 200
 
-volatile bool adv_enable = true;  // true = forward, false = reverse
-volatile bool is_bond = false;    // true = fast, false = slow.
-volatile bool is_connected = false;
-volatile bool is_reset = false;
 volatile bool led2_red_on = false;
 volatile bool led2_blue_on = false;
 volatile bool led2_green_on = false;
@@ -60,45 +56,54 @@ enum button_id {
   BUTTON_ID_COUNT
 };
 
-int get_status(struct button_state* out_state) {
-  out_state->is_adv_enable = adv_enable;
-  out_state->is_bond = is_bond;
-
-  return 0;
+struct device_status* get_status(void) {
+  static struct device_status instance = {
+      .status_bits = ATOMIC_INIT(0),
+  };
+  return &instance;
 }
 
-int set_is_connected(bool enable) {
-  is_connected = enable;
+// int set_is_bound(bool enable) {
+//   is_bond = enable;
 
-  return 0;
-}
+//   return 0;
+// }
+
+// int set_is_connected(bool enable) {
+//   is_connected = enable;
+
+//   return 0;
+// }
 
 static bool handle_click_event(const struct click_event* evt) {
   // LOG_INF("CLICK HANDLER %d", evt->key_id);
   if (evt->key_id == 0x00) {
     switch (evt->click) {
       case CLICK_SHORT: {
-        if (adv_enable) {
+        if (atomic_test_bit(&get_status()->status_bits, ADV_ENABLE)) {
           LOG_INF("Disable adv");
+          atomic_clear_bit(&get_status()->status_bits, ADV_ENABLE);
         } else {
           LOG_INF("Enable adv");
+          atomic_set_bit(&get_status()->status_bits, ADV_ENABLE);
         }
-        adv_enable = !adv_enable;
       } break;
       case CLICK_LONG: {
         LOG_INF("Disable adv and bond (reset)");
-        adv_enable = false;
-        is_bond = false;
-        is_reset = true;
+        atomic_clear_bit(&get_status()->status_bits, ADV_ENABLE);
+        atomic_clear_bit(&get_status()->status_bits, BONDED);
+        atomic_clear_bit(&get_status()->status_bits, CONNECTED);
+        atomic_set_bit(&get_status()->status_bits, RESET);
       } break;
       case CLICK_DOUBLE: {
-        if (is_bond) {
+        if (atomic_test_bit(&get_status()->status_bits, BONDED)) {
           LOG_INF("Disable bond");
+          atomic_clear_bit(&get_status()->status_bits, BONDED);
         } else {
           LOG_INF("Enable bond");
+          atomic_set_bit(&get_status()->status_bits, BONDED);
         }
         led2_blue_on = true;
-        is_bond = !is_bond;
       } break;
       default:
         break;
@@ -136,6 +141,11 @@ void blinkythread(void) {
   /* If we have an LED, match its state to the button's. */
   while (1) {
     uint32_t time_point = k_cycle_get_32();
+    bool adv_enable = atomic_test_bit(&get_status()->status_bits, ADV_ENABLE);
+    bool is_bond = atomic_test_bit(&get_status()->status_bits, BONDED);
+    bool is_connected =
+        atomic_test_bit(&get_status()->status_bits, CONNECTED);
+    bool is_reset = atomic_test_bit(&get_status()->status_bits, RESET);
     switch (cnt & 0x1) {
       case 0: {
         if (adv_enable && (time_point - time_point_led1 > 10000)) {
@@ -171,7 +181,7 @@ void blinkythread(void) {
         }
 
         if (is_reset) {
-          is_reset = false;
+          atomic_clear_bit(&get_status()->status_bits, RESET);
           gpio_pin_set_dt(&led1, 1);
           gpio_pin_set_dt(&led2_red, 1);
           gpio_pin_set_dt(&led2_blue, 1);
