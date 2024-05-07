@@ -8,6 +8,7 @@
 
 #include <zephyr/settings/settings.h>
 
+#include <app_event_manager.h>
 #include <dk_buttons_and_leds.h>
 
 #include <zephyr/bluetooth/bluetooth.h>
@@ -23,11 +24,12 @@
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/reboot.h>
 
-#include "button_svc.h"
+#include "modules/button_state.h"
 
-#define LOG_MODULE_NAME app
+#define MODULE main
+#include <caf/events/module_state_event.h>
 
-LOG_MODULE_DECLARE(main, CONFIG_LOG_DEFAULT_LEVEL);
+LOG_MODULE_REGISTER(MODULE);
 
 #define RUN_STATUS_LED DK_LED1
 #define CENTRAL_CON_STATUS_LED DK_LED2
@@ -44,11 +46,11 @@ struct bt_conn* ble_conn;
 
 static size_t send_count = 0;
 static uint8_t simulate_vnd;
-static bool is_bonded = false;
+volatile bool is_bonded = false;
+volatile bool is_adved = false;
 static bt_addr_le_t bond_addr;
 static struct bt_le_adv_param adv_param;
 
-static bool btn_is_pressed = false;
 static void notify_bps(void);
 
 static uint8_t vnd_value[VND_MAX_LEN] = {
@@ -103,13 +105,13 @@ static void connected(struct bt_conn* conn, uint8_t err) {
   if (err) {
     printk("Connection failed (err 0x%02x)\n", err);
   } else {
-    dk_set_led_on(CENTRAL_CON_STATUS_LED);
-    
     // show connection source mac address
     char addr[BT_ADDR_LE_STR_LEN];
     bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
     printk("Connected %s\n", addr);
-    
+
+    set_is_connected(true);
+
     if (!ble_conn) {
       ble_conn = bt_conn_ref(conn);
     }
@@ -122,11 +124,12 @@ static void connected(struct bt_conn* conn, uint8_t err) {
 
 static void disconnected(struct bt_conn* conn, uint8_t reason) {
   printk("Disconnected (reason 0x%02x)\n", reason);
-  dk_set_led_off(CENTRAL_CON_STATUS_LED);
+  // dk_set_led_off(CENTRAL_CON_STATUS_LED);
   if (ble_conn) {
     bt_conn_unref(ble_conn);
     ble_conn = NULL;
   }
+  set_is_connected(false);
 }
 
 static void alert_stop(void) {
@@ -183,8 +186,10 @@ static void bt_ready(void) {
     adv_param.options |= BT_LE_ADV_OPT_DIR_ADDR_RPA;
     // err = bt_le_adv_start(&adv_param, NULL, 0, NULL, 0);
     is_bonded = true;
+    is_adved = true;
     err = bt_le_adv_start(BT_LE_ADV_CONN_NAME, ad, ARRAY_SIZE(ad), NULL, 0);
   } else {
+    is_adved = true;
     err = bt_le_adv_start(BT_LE_ADV_CONN_NAME, ad, ARRAY_SIZE(ad), NULL, 0);
   }
 
@@ -203,15 +208,6 @@ static void bt_ready(void) {
     printk("Advertising failed to start (err %d)\n", err);
   } else {
     printk("Advertising successfully started\n");
-  }
-}
-
-static void button_callback(const struct device* gpiob,
-                            struct gpio_callback* cb, uint32_t pins) {
-  printk("Button pressed at %" PRIu32 "\n", k_cycle_get_32());
-  if (!btn_is_pressed) {
-    btn_is_pressed = true;
-    return;
   }
 }
 
@@ -234,24 +230,16 @@ int main(void) {
   char str[BT_UUID_STR_LEN];
   int err;
 
-  int blink_status = 0;
-
-  err = dk_leds_init();
-  if (err) {
-    printk("LEDs init failed (err %d)\n", err);
-    return 0;
+  if (app_event_manager_init()) {
+    printk("Application Event Manager not initialized\n");
+  } else {
+    module_set_state(MODULE_STATE_READY);
   }
 
   err = bt_enable(NULL);
   if (err) {
     // print error no and text
     printk("Bluetooth init failed (err %d - %s)\n", err, strerror(-err));
-    return 0;
-  }
-
-  err = button_init(button_callback);
-  if (err) {
-    printk("Cannot initialize buttons (err %d)\n", err);
     return 0;
   }
 
@@ -266,46 +254,31 @@ int main(void) {
   bt_uuid_to_str(&bpm_uuid.uuid, str, sizeof(str));
   printk("Indicate BPS attr %p (UUID %s)\n", vnd_ind_attr, str);
 
-  uint32_t time_point = k_cycle_get_32();
-
   while (1) {
     k_sleep(K_MSEC(10));
 
-    if (is_bonded && (k_cycle_get_32() - time_point > 50000)) {
-      dk_set_led(RUN_STATUS_LED, (++blink_status) % 2);
-      time_point = k_cycle_get_32();
-    } else if (k_cycle_get_32() - time_point > 100000) {
-      dk_set_led(RUN_STATUS_LED, (++blink_status) % 2);
-      time_point = k_cycle_get_32();
-    }
-
-    // When button is pressed, stop advertising, unpair and reboot
-    if (btn_is_pressed) {
-      printk("Button pressed. Stopping advertising and unpairing\n");
-      err = bt_le_adv_stop();
-      if (err) {
-        printk("Stop advertising failed (err %d)\n", err);
+    struct button_state state;
+    if (get_status(&state) == 0) {
+      if (state.is_adv_enable && !is_adved) {
+        LOG_INF("Starting advertising");
+        is_adved = true;
+        err = bt_le_adv_start(BT_LE_ADV_CONN_NAME, ad, ARRAY_SIZE(ad), NULL, 0);
+      } else if (!state.is_adv_enable && is_adved) {
+        LOG_INF("Stopping advertising");
+        is_adved = false;
+        err = bt_le_adv_stop();
       }
 
-      err = bt_unpair(BT_ID_DEFAULT, BT_ADDR_LE_ANY);
-      if (err) {
-        printk("Failed to unpair with last bonded device (err %d)\n", err);
+      if (state.is_bond && !is_bonded) {
+        LOG_INF("Set bonding to true");
+        is_bonded = true;
+      } else if (!state.is_bond && is_bonded) {
+        LOG_INF("Set bonding to false and call unpair");
+        is_bonded = false;
+        err = bt_unpair(BT_ID_DEFAULT, BT_ADDR_LE_ANY);
       }
-      // save settings
-      if (IS_ENABLED(CONFIG_SETTINGS)) {
-        settings_save();
-      }
-
-      // printk("Rebooting in 3 second...\n");
-      // k_sleep(K_SECONDS(3));
-      // sys_reboot(SYS_REBOOT_WARM);
-
-      is_bonded = false;
-      bt_addr_le_copy(&bond_addr, BT_ADDR_LE_NONE);
-      printk("Re-Starting advertising\n");
-      bt_le_adv_start(BT_LE_ADV_CONN_NAME, ad, ARRAY_SIZE(ad), NULL, 0);
-      btn_is_pressed = false;
     }
   }
+
   return 0;
 }

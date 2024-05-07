@@ -8,6 +8,11 @@ target_sources(app PRIVATE
   ${app_sources}
   )
 
-zephyr_library_include_directories(
+zephyr_include_directories(
     src
+    configuration/${BOARD}
     )
+    
+target_sources_ifdef(CONFIG_CAF_SAMPLE_BUTTON_STATE
+    app PRIVATE src/modules/button_state.c)
+

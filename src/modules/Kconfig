@@ -1,0 +1,20 @@
+#
+# Copyright (c) 2021 Nordic Semiconductor ASA
+#
+# SPDX-License-Identifier: LicenseRef-Nordic-5-Clause
+#
+
+config CAF_SAMPLE_BUTTON_STATE
+	bool "Sample Button state module"
+	depends on CAF_LED_EVENTS
+	depends on CAF_BUTTON_EVENTS
+	help
+	  If enabled, the application specific, Button state module.
+	  
+if CAF_SAMPLE_BUTTON_STATE
+
+module = CAF_SAMPLE_BUTTON_STATE
+module-str = caf sample button state
+source "subsys/logging/Kconfig.template.log_config"
+
+endif # CAF_SAMPLE_BUTTON_STATE
