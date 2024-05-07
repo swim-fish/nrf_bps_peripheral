@@ -25,11 +25,13 @@
 
 #include "button_svc.h"
 
+#define LOG_MODULE_NAME app
+
+LOG_MODULE_DECLARE(main, CONFIG_LOG_DEFAULT_LEVEL);
+
 #define RUN_STATUS_LED DK_LED1
 #define CENTRAL_CON_STATUS_LED DK_LED2
 #define PERIPHERAL_CONN_STATUS_LED DK_LED3
-
-LOG_MODULE_REGISTER(main);
 
 static struct bt_uuid_16 bps_uuid = BT_UUID_INIT_16(BT_UUID_BPS_VAL);
 
@@ -40,11 +42,9 @@ static struct bt_uuid_16 bpm_uuid = BT_UUID_INIT_16(BT_UUID_GATT_BPM_VAL);
 /* BLE connection */
 struct bt_conn* ble_conn;
 
-static uint8_t send_count = 0;
-static bool is_bonded = false;
+static size_t send_count = 0;
 static uint8_t simulate_vnd;
-// static uint8_t indicating;
-// static struct bt_gatt_indicate_params ind_params;
+static bool is_bonded = false;
 static bt_addr_le_t bond_addr;
 static struct bt_le_adv_param adv_param;
 
@@ -61,7 +61,7 @@ static void vnd_ccc_cfg_changed(const struct bt_gatt_attr* attr,
                                 uint16_t value) {
   ARG_UNUSED(attr);
   simulate_vnd = (value == BT_GATT_CCC_NOTIFY) ? 1 : 0;
-  LOG_INF("Notification %s", simulate_vnd ? "enabled" : "disabled");
+  printk("Notification %s\n", simulate_vnd ? "enabled" : "disabled");
 
   if (is_bonded && simulate_vnd) {
     notify_bps();
@@ -103,10 +103,19 @@ static void connected(struct bt_conn* conn, uint8_t err) {
   if (err) {
     printk("Connection failed (err 0x%02x)\n", err);
   } else {
-    printk("Connected\n");
     dk_set_led_on(CENTRAL_CON_STATUS_LED);
+    
+    // show connection source mac address
+    char addr[BT_ADDR_LE_STR_LEN];
+    bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
+    printk("Connected %s\n", addr);
+    
     if (!ble_conn) {
       ble_conn = bt_conn_ref(conn);
+    }
+    // auth requested by peer
+    if (bt_conn_set_security(conn, BT_SECURITY_L2)) {
+      printk("Failed to set security\n");
     }
   }
 }
@@ -118,7 +127,6 @@ static void disconnected(struct bt_conn* conn, uint8_t reason) {
     bt_conn_unref(ble_conn);
     ble_conn = NULL;
   }
-  send_count = 0;
 }
 
 static void alert_stop(void) {
@@ -180,6 +188,7 @@ static void bt_ready(void) {
     err = bt_le_adv_start(BT_LE_ADV_CONN_NAME, ad, ARRAY_SIZE(ad), NULL, 0);
   }
 
+  // Get the Bluetooth device address
   bt_id_get(&addr_le, &count);
   bt_addr_le_to_str(&addr_le, addr, sizeof(addr));
   printk("Bluetooth Device Address: %s\n", addr);
@@ -207,10 +216,13 @@ static void button_callback(const struct device* gpiob,
 }
 
 void pairing_complete(struct bt_conn* conn, bool bonded) {
-  printk("Pairing completed. Rebooting in 3 seconds...\n");
+  printk("Pairing complete\n");
+  is_bonded = true;
+  bt_addr_le_copy(&bond_addr, bt_conn_get_dst(conn));
 
-  k_sleep(K_SECONDS(3));
-  sys_reboot(SYS_REBOOT_WARM);
+  // printk("Pairing completed. Rebooting in 3 seconds...\n");
+  // k_sleep(K_SECONDS(3));
+  // sys_reboot(SYS_REBOOT_WARM);
 }
 
 static struct bt_conn_auth_info_cb bt_conn_auth_info = {.pairing_complete =
@@ -232,13 +244,14 @@ int main(void) {
 
   err = bt_enable(NULL);
   if (err) {
-    printk("Bluetooth init failed (err %d)\n", err);
+    // print error no and text
+    printk("Bluetooth init failed (err %d - %s)\n", err, strerror(-err));
     return 0;
   }
 
   err = button_init(button_callback);
   if (err) {
-    LOG_ERR("Cannot initialize buttons (err %d)", err);
+    printk("Cannot initialize buttons (err %d)\n", err);
     return 0;
   }
 
@@ -253,13 +266,22 @@ int main(void) {
   bt_uuid_to_str(&bpm_uuid.uuid, str, sizeof(str));
   printk("Indicate BPS attr %p (UUID %s)\n", vnd_ind_attr, str);
 
-  while (1) {
-    k_sleep(K_SECONDS(1));
+  uint32_t time_point = k_cycle_get_32();
 
-    dk_set_led(RUN_STATUS_LED, (++blink_status) % 2);
+  while (1) {
+    k_sleep(K_MSEC(10));
+
+    if (is_bonded && (k_cycle_get_32() - time_point > 50000)) {
+      dk_set_led(RUN_STATUS_LED, (++blink_status) % 2);
+      time_point = k_cycle_get_32();
+    } else if (k_cycle_get_32() - time_point > 100000) {
+      dk_set_led(RUN_STATUS_LED, (++blink_status) % 2);
+      time_point = k_cycle_get_32();
+    }
 
     // When button is pressed, stop advertising, unpair and reboot
     if (btn_is_pressed) {
+      printk("Button pressed. Stopping advertising and unpairing\n");
       err = bt_le_adv_stop();
       if (err) {
         printk("Stop advertising failed (err %d)\n", err);
@@ -274,9 +296,15 @@ int main(void) {
         settings_save();
       }
 
-      printk("Rebooting in 3 second...\n");
-      k_sleep(K_SECONDS(3));
-      sys_reboot(SYS_REBOOT_WARM);
+      // printk("Rebooting in 3 second...\n");
+      // k_sleep(K_SECONDS(3));
+      // sys_reboot(SYS_REBOOT_WARM);
+
+      is_bonded = false;
+      bt_addr_le_copy(&bond_addr, BT_ADDR_LE_NONE);
+      printk("Re-Starting advertising\n");
+      bt_le_adv_start(BT_LE_ADV_CONN_NAME, ad, ARRAY_SIZE(ad), NULL, 0);
+      btn_is_pressed = false;
     }
   }
   return 0;
