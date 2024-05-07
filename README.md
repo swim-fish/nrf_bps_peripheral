@@ -59,11 +59,71 @@ stateDiagram-v2
 
 ```mermaid
 ---
-title: 
+title: Test status
 ---
 stateDiagram-v2
-  [*] --> AdvOnDisconnected: Boot up
-  AdvOnDisconnected --> Resetting: sw1 long press
-  Resetting --> AdvOffDisconnected
+    BootUp: Adv On Disconnected
+    note left of BootUp
+        LED1: Short blink
+        LED2: Blue on
+    end note
 
+    AfterReset: Adv Off Disconnected
+    note left of AfterReset
+        LED1: Long blink
+        LED2: Blue off
+    end note
+
+    Connected: Adv On Connected
+    note left of Connected
+        LED1: Short blink
+        LED2: Red on
+    end note
+
+    ConnectedBonded: Adv On Connected Bonded
+    note right of ConnectedBonded
+        LED1: Short blink
+        LED2: Red on
+    end note
+
+    ConnectedBondedAdvOff: Adv Off Connected Bonded
+    note right of ConnectedBondedAdvOff
+        LED1: Long blink
+        LED2: Red on
+    end note
+
+    DisconnectedBonded: Adv On Disconnected Bonded
+    note right of DisconnectedBonded
+        LED1: Short blink
+        LED2: Blue Short blink
+    end note
+
+    DisconnectedBondedAdvOff: Adv Off Disconnected Bonded
+    note left of DisconnectedBondedAdvOff
+        LED1: Long blink
+        LED2: Blue Long blink
+    end note
+
+
+    [*] --> Ready: power on
+    state Ready{
+        [*] --> BootUp
+        BootUp --> Connected : connected
+        Connected --> DisconnectedBonded : after paired and disconnected
+        DisconnectedBonded --> ConnectedBonded : connected
+        DisconnectedBonded --> DisconnectedBondedAdvOff : sw1 short press
+        ConnectedBonded --> DisconnectedBonded : disconnected
+        ConnectedBonded --> ConnectedBondedAdvOff : sw1 short press
+        ConnectedBondedAdvOff --> ConnectedBonded : sw1 short press
+        ConnectedBondedAdvOff --> DisconnectedBondedAdvOff : disconnected
+        DisconnectedBondedAdvOff --> DisconnectedBonded : sw1 short press
+    }
+    state Reset{
+        
+        [*] --> DoReset
+        DoReset --> AfterReset: after reset
+    }
+    Ready --> Reset: sw1 long press (5 secodns)
+    Reset --> Ready : sw1 short press
+    BootUp --> AfterReset : sw1 short press
 ```
