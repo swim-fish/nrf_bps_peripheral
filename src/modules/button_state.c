@@ -56,24 +56,13 @@ enum button_id {
   BUTTON_ID_COUNT
 };
 
+// Return the singleton instance of device status
 struct device_status* get_status(void) {
   static struct device_status instance = {
       .status_bits = ATOMIC_INIT(0),
   };
   return &instance;
 }
-
-// int set_is_bound(bool enable) {
-//   is_bond = enable;
-
-//   return 0;
-// }
-
-// int set_is_connected(bool enable) {
-//   is_connected = enable;
-
-//   return 0;
-// }
 
 static bool handle_click_event(const struct click_event* evt) {
   // LOG_INF("CLICK HANDLER %d", evt->key_id);
@@ -143,8 +132,7 @@ void blinkythread(void) {
     uint32_t time_point = k_cycle_get_32();
     bool adv_enable = atomic_test_bit(&get_status()->status_bits, ADV_ENABLE);
     bool is_bond = atomic_test_bit(&get_status()->status_bits, BONDED);
-    bool is_connected =
-        atomic_test_bit(&get_status()->status_bits, CONNECTED);
+    bool is_connected = atomic_test_bit(&get_status()->status_bits, CONNECTED);
     bool is_reset = atomic_test_bit(&get_status()->status_bits, RESET);
     switch (cnt & 0x1) {
       case 0: {

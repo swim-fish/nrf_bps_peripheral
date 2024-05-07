@@ -56,6 +56,24 @@ static void notify_bps(void);
 static uint8_t vnd_value[VND_MAX_LEN] = {
     // 1e 80 00 5c 00 68 00 e8 07 04 12 12 28 00 60 00
     // 01 00 00 00 00
+    // Flags bit =>  0001 1110
+    //    bit 0 mmHg/kPa = 0 mmHg
+    //    bit 1 Time Stamp = 1 enable
+    //    bit 2 Pulse Rate = 1 enable
+    //    bit 3 User ID = 1 enable
+    //    bit 4 Measurement Status = 1 enable
+    // Systolic 80 00 => 128
+    // Diastolic 5c 00 => 92
+    // MeanAP 68 00 => 104
+    // TimeStamp e8 07 04 12 12 28 00
+    //    year 07e8 => 2024
+    //    month 04 => 4
+    //    day 12 => 18
+    //    hour 12 => 18
+    //    minute 28 => 40
+    //    second 00 => 0
+    // PulseRate 60 00 => 96
+    // Other 01 00 00 00 00
     0x1e, 0x80, 0x00, 0x5c, 0x00, 0x68, 0x00, 0xe8, 0x07, 0x04, 0x12,
     0x12, 0x28, 0x00, 0x60, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00};
 
@@ -71,13 +89,14 @@ static void vnd_ccc_cfg_changed(const struct bt_gatt_attr* attr,
   }
 }
 
-/* Vendor Primary Service Declaration */
+/* Blood Pressure Primary Service Declaration */
 BT_GATT_SERVICE_DEFINE(
     bps_svc, BT_GATT_PRIMARY_SERVICE(&bps_uuid),
     BT_GATT_CHARACTERISTIC(&bpm_uuid.uuid,
                            BT_GATT_CHRC_READ | BT_GATT_CHRC_INDICATE |
                                BT_GATT_CHRC_NOTIFY,
                            BT_GATT_PERM_READ, NULL, NULL, vnd_value),
+    // Notify need to enable CCC (Client Characteristic Configuration) Declaration
     BT_GATT_CCC(vnd_ccc_cfg_changed, BT_GATT_PERM_READ | BT_GATT_PERM_WRITE), );
 
 static const struct bt_data ad[] = {
@@ -250,7 +269,6 @@ int main(void) {
 
   err = bt_enable(NULL);
   if (err) {
-    // print error no and text
     printk("Bluetooth init failed (err %d - %s)\n", err, strerror(-err));
     return 0;
   }
